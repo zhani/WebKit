@@ -135,6 +135,28 @@ void CoordinatedGraphicsLayer::didChangeGeometry(FlushNotification flushNotifica
     setShouldUpdateVisibleRect();
 }
 
+bool isZeroCopy()
+{
+    static bool isZeroCopy;
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, [] {
+#if USE(GBM)
+        const char* gbmTileUpdatePolicy = getenv("WEBKIT_GBM_TILE_UPDATE_POLICY");
+        if (gbmTileUpdatePolicy) {
+            if(!strcmp(gbmTileUpdatePolicy, "ZeroCopy"))
+                isZeroCopy = true;
+            else
+                isZeroCopy = false;
+        } else
+#endif
+        {
+            isZeroCopy = false;
+        }
+    });
+
+    return isZeroCopy;
+}
+
 CoordinatedGraphicsLayer::CoordinatedGraphicsLayer(Type layerType, GraphicsLayerClient& client)
     : GraphicsLayer(layerType, client)
 #ifndef NDEBUG
@@ -1185,6 +1207,13 @@ void CoordinatedGraphicsLayer::updateContentBuffers()
             tile.ensureTileID();
 
             auto& tileRect = tile.rect();
+
+            if (isZeroCopy()) {
+                // Invalidate full tile if zero copy
+                tile.markClean();
+                tile.invalidate(tileRect);
+            }
+
             auto& dirtyRect = tile.dirtyRect();
             auto buffer = paintTile(dirtyRect, layerState.mainBackingStore->mapToContents(dirtyRect), layerState.mainBackingStore->contentsScale());
 

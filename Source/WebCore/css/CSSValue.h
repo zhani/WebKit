@@ -338,6 +338,7 @@ inline void CSSValue::deref() const
 
     if (!tempRefCount) {
 IGNORE_GCC_WARNINGS_BEGIN("free-nonheap-object")
+IGNORE_GCC_WARNINGS_BEGIN("use-after-free")
         delete this;
 IGNORE_GCC_WARNINGS_END
         return;

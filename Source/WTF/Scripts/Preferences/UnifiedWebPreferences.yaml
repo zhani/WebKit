@@ -2740,6 +2740,21 @@ GamepadsEnabled:
     WebCore:
       default: false
 
+GbmTileUpdatePolicy:
+  type: uint32_t
+  refinedType: WebCore::GbmTileUpdatePolicy
+  status: internal
+  condition: USE(GBM)
+  humanReadableName: "Gbm tile update policy"
+  humanReadableDescription: "Gbm tile update policy"
+  defaultValue:
+    WebKitLegacy:
+      default: GbmTileUpdatePolicy::TexSubImage2D
+    WebKit:
+      default: GbmTileUpdatePolicy::TexSubImage2D
+    WebCore:
+      default: GbmTileUpdatePolicy::TexSubImage2D
+
 # FIXME: This is on by default in WebKit2. Perhaps we should consider turning it on for WebKitLegacy as well.
 GenericCueAPIEnabled:
   type: bool
@@ -6832,6 +6847,20 @@ UseGPUProcessForWebGLEnabled:
     WebCore:
       "ENABLE(GPU_PROCESS_BY_DEFAULT) && ENABLE(GPU_PROCESS_WEBGL_BY_DEFAULT)": true
       "USE(GRAPHICS_LAYER_WC)": true
+      default: false
+
+UseGbmTiles:
+  type: bool
+  status: internal
+  condition: USE(GBM)
+  humanReadableName: "Use Gbm buffer backed tiles"
+  humanReadableDescription: "Use Gbm buffer backed tiles"
+  defaultValue:
+    WebKitLegacy:
+      default: false
+    WebKit:
+      default: false
+    WebCore:
       default: false
 
 UseGiantTiles:

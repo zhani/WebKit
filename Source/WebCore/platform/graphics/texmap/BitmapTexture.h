@@ -36,6 +36,14 @@
 #include <wtf/RefCounted.h>
 #include <wtf/RefPtr.h>
 
+#if USE(GBM)
+struct gbm_bo;
+#endif
+
+namespace Nicosia {
+class Buffer;
+}
+
 namespace WebCore {
 
 class GraphicsLayer;
@@ -50,10 +58,17 @@ public:
         DepthBuffer = 1 << 1,
     };
 
+#if USE(GBM)
+    static Ref<BitmapTexture> create(const IntSize& size, OptionSet<Flags> flags = { }, GLint internalFormat = GL_DONT_CARE, bool useGbmBufferBacking = false, bool useExplicitGbmBuffer = false)
+    {
+        return adoptRef(*new BitmapTexture(size, flags, internalFormat, useGbmBufferBacking, useExplicitGbmBuffer));
+    }
+#else
     static Ref<BitmapTexture> create(const IntSize& size, OptionSet<Flags> flags = { }, GLint internalFormat = GL_DONT_CARE)
     {
         return adoptRef(*new BitmapTexture(size, flags, internalFormat));
     }
+#endif
 
     WEBCORE_EXPORT ~BitmapTexture();
 
@@ -70,6 +85,13 @@ public:
     void updateContents(NativeImage*, const IntRect&, const IntPoint& offset);
     void updateContents(GraphicsLayer*, const IntRect& target, const IntPoint& offset, float scale = 1);
     void updateContents(const void*, const IntRect& target, const IntPoint& offset, int bytesPerLine);
+#if USE(GBM)
+    void updateGbmBufferContentsGbmMap(const void* srcData, const IntRect& targetRect, const IntPoint& sourceOffset, int bytesPerLine);
+    void updateGbmBufferContentsMMap(const void* srcData, const IntRect& targetRect, const IntPoint& sourceOffset, int bytesPerLine);
+    void updateAndAdoptGbmBuffer(RefPtr<Nicosia::Buffer> gbmBuffer);
+
+    bool hasGbmBacking() const { return m_gbmBuffer != nullptr; }
+#endif
 
     void reset(const IntSize&, OptionSet<Flags> = { });
 
@@ -87,7 +109,15 @@ public:
     OptionSet<TextureMapperFlags> colorConvertFlags() const { return m_colorConvertFlags; }
 
 private:
+
+#if USE(GBM)
+    BitmapTexture(const IntSize&, OptionSet<Flags>, GLint internalFormat, bool useGbmBufferBacking, bool useExplicitGbmBuffer);
+
+    void createGbmBuffer();
+    void destroyGbmBuffer();
+#else
     BitmapTexture(const IntSize&, OptionSet<Flags>, GLint internalFormat);
+#endif
 
     void clearIfNeeded();
     void createFboIfNeeded();
@@ -105,6 +135,9 @@ private:
     RefPtr<const FilterOperation> m_filterOperation;
     GLint m_internalFormat { 0 };
     GLenum m_format { 0 };
+#if USE(GBM)
+    RefPtr<Nicosia::Buffer> m_gbmBuffer;
+#endif
 };
 
 } // namespace WebCore

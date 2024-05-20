@@ -44,6 +44,33 @@
 #include <wtf/text/CString.h>
 #endif
 
+#if USE(GBM)
+#include "DRMDeviceManager.h"
+#include "NicosiaBuffer.h"
+#include "PlatformDisplay.h"
+
+#include <epoxy/egl.h>
+#include <gbm.h>
+#include <drm_fourcc.h>
+#include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <xf86drm.h>
+#include <wtf/SafeStrerror.h>
+#include <wtf/unix/UnixFileDescriptor.h>
+
+#define HANDLE_EINTR(x)                                                  \
+	({                                                               \
+		int eintr_wrapper_counter = 0;                           \
+		int eintr_wrapper_result;                                \
+		do {                                                     \
+			eintr_wrapper_result = (x);                      \
+		} while (eintr_wrapper_result == -1 && errno == EINTR && \
+			 eintr_wrapper_counter++ < 100);                 \
+		eintr_wrapper_result;                                    \
+	})
+#endif
+
 #if OS(DARWIN)
 #define GL_UNSIGNED_INT_8_8_8_8_REV 0x8367
 static const GLenum s_pixelDataType = GL_UNSIGNED_INT_8_8_8_8_REV;
@@ -71,6 +98,59 @@ GLenum depthBufferFormat()
     return GL_DEPTH_COMPONENT16;
 }
 
+#if USE(GBM)
+BitmapTexture::BitmapTexture(const IntSize& size, OptionSet<Flags> flags, GLint internalFormat, bool useGbmBufferBacking, bool useExplicitGbmBuffer)
+    : m_flags(flags)
+    , m_size(size)
+    , m_internalFormat(internalFormat == GL_DONT_CARE ? GL_RGBA : internalFormat)
+    , m_format(GL_RGBA)
+{
+    if (useGbmBufferBacking) {
+        if (!useExplicitGbmBuffer)
+            createGbmBuffer();
+    } else {
+        glGenTextures(1, &m_id);
+        glBindTexture(GL_TEXTURE_2D, m_id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, m_internalFormat, m_size.width(), m_size.height(), 0, m_format, s_pixelDataType, nullptr);
+    }
+}
+
+void BitmapTexture::createGbmBuffer()
+{
+    m_gbmBuffer = Nicosia::GbmBuffer::create(m_size, m_flags.contains(Flags::SupportsAlpha) ? Nicosia::Buffer::SupportsAlpha : Nicosia::Buffer::NoFlags);
+    auto& buffer = static_cast<Nicosia::GbmBuffer&>(*m_gbmBuffer);
+    m_id = buffer.textureID();
+}
+
+void BitmapTexture::destroyGbmBuffer()
+{
+    if (!m_gbmBuffer) {
+        glDeleteTextures(1, &m_id);
+        m_id = 0;
+    }
+
+    if (m_fbo) {
+        glDeleteFramebuffers(1, &m_fbo);
+        m_fbo = 0;
+    }
+
+    if (m_depthBufferObject) {
+        glDeleteRenderbuffers(1, &m_depthBufferObject);
+        m_depthBufferObject = 0;
+    }
+
+    if (m_stencilBufferObject) {
+        glDeleteRenderbuffers(1, &m_stencilBufferObject);
+        m_stencilBufferObject = 0;
+    }
+
+    m_gbmBuffer = nullptr;
+}
+#else
 BitmapTexture::BitmapTexture(const IntSize& size, OptionSet<Flags> flags, GLint internalFormat)
     : m_flags(flags)
     , m_size(size)
@@ -85,6 +165,7 @@ BitmapTexture::BitmapTexture(const IntSize& size, OptionSet<Flags> flags, GLint 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, m_internalFormat, m_size.width(), m_size.height(), 0, m_format, s_pixelDataType, nullptr);
 }
+#endif
 
 void BitmapTexture::reset(const IntSize& size, OptionSet<Flags> flags)
 {
@@ -94,6 +175,13 @@ void BitmapTexture::reset(const IntSize& size, OptionSet<Flags> flags)
     m_filterOperation = nullptr;
     if (m_size != size) {
         m_size = size;
+#if USE(GBM)
+        if (m_gbmBuffer != nullptr) {
+            destroyGbmBuffer();
+            createGbmBuffer();
+            return;
+        }
+#endif
         glBindTexture(GL_TEXTURE_2D, m_id);
         glTexImage2D(GL_TEXTURE_2D, 0, m_internalFormat, m_size.width(), m_size.height(), 0, m_format, s_pixelDataType, nullptr);
     }
@@ -202,6 +290,94 @@ void BitmapTexture::updateContents(GraphicsLayer* sourceLayer, const IntRect& ta
     updateContents(image.get(), targetRect, IntPoint());
 }
 
+#if USE(GBM)
+void BitmapTexture::updateGbmBufferContentsGbmMap(const void* srcData, const IntRect& targetRect, const IntPoint& /*sourceOffset*/, int /*bytesPerLine*/)
+{
+    auto& buffer = static_cast<Nicosia::GbmBuffer&>(*m_gbmBuffer);
+
+    void *mappedData = NULL;
+    uint32_t stride;
+
+    void *addr = gbm_bo_map(buffer.bo(), targetRect.x(), targetRect.y(), targetRect.width(), targetRect.height(), GBM_BO_TRANSFER_WRITE, &stride, &mappedData);
+    uint32_t *pixel = static_cast<uint32_t*>(addr);
+    uint32_t pixelSize = sizeof(*pixel);
+    uint32_t stridePixels = stride / pixelSize;
+
+    auto srcPixel = static_cast<const uint32_t*>(srcData);
+
+    for (int y = 0; y < targetRect.height(); ++y)
+        for (int x = 0; x < targetRect.width(); ++x)
+            pixel[y * stridePixels + x] = srcPixel[y*targetRect.width() + x];
+
+    gbm_bo_unmap(buffer.bo(), mappedData);
+}
+
+void BitmapTexture::updateGbmBufferContentsMMap(const void* srcData, const IntRect& targetRect, const IntPoint& /*sourceOffset*/, int /*bytesPerLine*/)
+{
+    auto& buffer = static_cast<Nicosia::GbmBuffer&>(*m_gbmBuffer);
+
+    /*
+    int primeFd;
+    gbm_device* gbm_dev = gbm_bo_get_device(buffer.bo());
+    int dev_fd = gbm_device_get_fd(gbm_dev);
+    const uint32_t handle = gbm_bo_get_handle(buffer.bo()).u32;
+    drmPrimeHandleToFD(dev_fd, handle, DRM_RDWR | DRM_CLOEXEC, &primeFd);
+*/
+    gbm_device* gbm_dev = gbm_bo_get_device(buffer.bo());
+    int dev_fd = gbm_device_get_fd(gbm_dev);
+    const uint32_t handle = gbm_bo_get_handle_for_plane(buffer.bo(), 0).u32;
+    int primeFd;
+    int ret = drmPrimeHandleToFD(dev_fd, handle, DRM_RDWR | DRM_CLOEXEC, &primeFd);
+    // Older DRM implementations blocked DRM_RDWR, but gave a read/write mapping
+    // anyways
+    if (ret) {
+        ret = drmPrimeHandleToFD(dev_fd, handle, DRM_CLOEXEC, &primeFd);
+    }
+
+
+    //int primeFd = gbm_bo_get_fd(buffer.bo());
+
+    uint32_t stride = gbm_bo_get_stride(buffer.bo());
+    uint32_t length = stride * m_size.height();
+
+    void *addr = mmap(NULL, length, PROT_WRITE, MAP_SHARED, primeFd, 0);
+    if (addr == MAP_FAILED) {
+        fprintf(stderr, "BitmapTexture mmap failed failed! errno: %d, strerror: %s\n", errno, strerror (errno));
+    }
+    uint32_t *pixel = static_cast<uint32_t*>(addr);
+    uint32_t pixelSize = sizeof(*pixel);
+    uint32_t stridePixels = stride / pixelSize;
+
+    auto srcPixel = static_cast<const uint32_t*>(srcData);
+
+    struct dma_buf_sync syncStart = { 0 };
+    struct dma_buf_sync syncEnd = { 0 };
+
+    syncStart.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
+	HANDLE_EINTR(ioctl(primeFd, DMA_BUF_IOCTL_SYNC, &syncStart));
+
+    uint32_t targetOffset = targetRect.y() * stridePixels + targetRect.x();
+
+    for (int y = 0; y < targetRect.height(); ++y)
+        for (int x = 0; x < targetRect.width(); ++x)
+            pixel[targetOffset + y * stridePixels + x] = srcPixel[y*targetRect.width() + x];
+
+    syncEnd.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+	HANDLE_EINTR(ioctl(primeFd, DMA_BUF_IOCTL_SYNC, &syncEnd));
+
+    munmap(addr, length);
+
+    close(primeFd);
+}
+
+void BitmapTexture::updateAndAdoptGbmBuffer(RefPtr<Nicosia::Buffer> gbmBuffer)
+{
+    m_gbmBuffer = gbmBuffer;//WTFMove(gbmBuffer);
+    auto& buffer = static_cast<Nicosia::GbmBuffer&>(*m_gbmBuffer);
+    m_id = buffer.textureID();
+}
+#endif
+
 void BitmapTexture::initializeStencil()
 {
     if (m_flags.contains(Flags::DepthBuffer)) {
@@ -283,6 +459,9 @@ void BitmapTexture::bindAsSurface()
 
 BitmapTexture::~BitmapTexture()
 {
+#if USE(GBM)
+    destroyGbmBuffer();
+#else
     glDeleteTextures(1, &m_id);
 
     if (m_fbo)
@@ -293,6 +472,7 @@ BitmapTexture::~BitmapTexture()
 
     if (m_stencilBufferObject)
         glDeleteRenderbuffers(1, &m_stencilBufferObject);
+#endif
 }
 
 void BitmapTexture::copyFromExternalTexture(GLuint sourceTextureID)

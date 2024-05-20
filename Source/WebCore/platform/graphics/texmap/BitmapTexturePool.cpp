@@ -26,6 +26,7 @@
 
 #include "config.h"
 #include "BitmapTexturePool.h"
+#include "NicosiaBuffer.h"
 
 #if USE(TEXTURE_MAPPER)
 
@@ -49,6 +50,32 @@ BitmapTexturePool::BitmapTexturePool()
 {
 }
 
+#if USE(GBM)
+RefPtr<BitmapTexture> BitmapTexturePool::acquireTexture(const IntSize& size, OptionSet<BitmapTexture::Flags> flags, bool useGbmBacking, bool useExplicitGbmBuffer)
+{
+    Entry* selectedEntry = std::find_if(m_textures.begin(), m_textures.end(),
+        [&](Entry& entry) {
+            return entry.m_texture->refCount() == 1
+                && entry.m_texture->size() == size
+                && entry.m_texture->flags().contains(BitmapTexture::Flags::DepthBuffer) == flags.contains(BitmapTexture::Flags::DepthBuffer)
+                && entry.m_texture->hasGbmBacking() == useGbmBacking;
+        });
+
+    if (selectedEntry == m_textures.end()) {
+        m_textures.append(Entry(BitmapTexture::create(size, flags, GL_DONT_CARE, useGbmBacking, useExplicitGbmBuffer)));
+        selectedEntry = &m_textures.last();
+        m_poolSize += size.unclampedArea();
+    } else {
+        selectedEntry->m_texture->reset(size, flags);
+    }
+    enterLimitExceededModeIfNeeded();
+
+    scheduleReleaseUnusedTextures();
+
+    selectedEntry->markIsInUse();
+    return selectedEntry->m_texture.copyRef();
+}
+#else
 RefPtr<BitmapTexture> BitmapTexturePool::acquireTexture(const IntSize& size, OptionSet<BitmapTexture::Flags> flags)
 {
     Entry* selectedEntry = std::find_if(m_textures.begin(), m_textures.end(),
@@ -72,6 +99,7 @@ RefPtr<BitmapTexture> BitmapTexturePool::acquireTexture(const IntSize& size, Opt
     selectedEntry->markIsInUse();
     return selectedEntry->m_texture.copyRef();
 }
+#endif
 
 void BitmapTexturePool::scheduleReleaseUnusedTextures()
 {

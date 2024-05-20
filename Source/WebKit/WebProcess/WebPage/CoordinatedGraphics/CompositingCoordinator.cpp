@@ -52,6 +52,7 @@
 #include <WebCore/NicosiaPaintingEngine.h>
 #elif USE(SKIA)
 #include <WebCore/SkiaAcceleratedBufferPool.h>
+#include <WebCore/SkiaGbmBufferPool.h>
 #endif
 
 #if USE(GLIB_EVENT_LOOP)
@@ -93,6 +94,7 @@ CompositingCoordinator::CompositingCoordinator(WebPage& page, CompositingCoordin
         m_skiaAcceleratedBufferPool = makeUnique<SkiaAcceleratedBufferPool>();
     else if (auto numberOfThreads = skiaNumberOfCpuPaintingThreads(); numberOfThreads > 0)
         m_skiaUnacceleratedThreadedRenderingPool = WorkerPool::create("SkiaPaintingThread"_s, numberOfThreads);
+    m_skiaGbmBufferPool = makeUnique<SkiaGbmBufferPool>();
 #endif
 
     m_nicosia.scene = Nicosia::Scene::create();
@@ -123,6 +125,7 @@ void CompositingCoordinator::invalidate()
 
 #if USE(SKIA)
     m_skiaAcceleratedBufferPool = nullptr;
+    m_skiaGbmBufferPool = nullptr;
     m_skiaUnacceleratedThreadedRenderingPool = nullptr;
 #endif
 }

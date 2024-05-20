@@ -37,9 +37,26 @@
 namespace WebKit {
 using namespace WebCore;
 
-CoordinatedGraphicsScene::CoordinatedGraphicsScene(CoordinatedGraphicsSceneClient* client)
-    : m_client(client)
+CoordinatedGraphicsScene::CoordinatedGraphicsScene(CoordinatedGraphicsSceneClient* client, WebCore::Settings& settings)
+    : m_settings(settings)
+    , m_client(client)
 {
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, [this] {
+#if USE(GBM)
+        const char* gbmTileUpdatePolicy = getenv("WEBKIT_GBM_TILE_UPDATE_POLICY");
+        if (gbmTileUpdatePolicy) {
+            if (!strcmp(gbmTileUpdatePolicy, "TexSubImage2D"))
+                m_settings.setGbmTileUpdatePolicy(GbmTileUpdatePolicy::TexSubImage2D);
+            else if(!strcmp(gbmTileUpdatePolicy, "GbmMap"))
+                m_settings.setGbmTileUpdatePolicy(GbmTileUpdatePolicy::GbmMap);
+            else if(!strcmp(gbmTileUpdatePolicy, "MMap"))
+                m_settings.setGbmTileUpdatePolicy(GbmTileUpdatePolicy::MMap);
+            else if(!strcmp(gbmTileUpdatePolicy, "ZeroCopy"))
+                m_settings.setGbmTileUpdatePolicy(GbmTileUpdatePolicy::ZeroCopy);
+        }
+#endif
+    });
 }
 
 CoordinatedGraphicsScene::~CoordinatedGraphicsScene() = default;
@@ -100,12 +117,23 @@ TextureMapperLayer& texmapLayer(Nicosia::CompositionLayer& compositionLayer)
     return *compositionState.layer;
 }
 
+#if USE(GBM)
+void updateBackingStore(TextureMapperLayer& layer,
+    Nicosia::BackingStore::CompositionState& compositionState,
+    const Nicosia::BackingStore::TileUpdate& update,
+    bool useGbmTiles,
+    GbmTileUpdatePolicy gbmTileUpdatePolicy)
+{
+    if (!compositionState.backingStore)
+    compositionState.backingStore = CoordinatedBackingStore::create(useGbmTiles, gbmTileUpdatePolicy);
+#else
 void updateBackingStore(TextureMapperLayer& layer,
     Nicosia::BackingStore::CompositionState& compositionState,
     const Nicosia::BackingStore::TileUpdate& update)
 {
     if (!compositionState.backingStore)
-        compositionState.backingStore = CoordinatedBackingStore::create();
+    compositionState.backingStore = CoordinatedBackingStore::create();
+#endif
     auto& backingStore = *compositionState.backingStore;
 
     layer.setBackingStore(&backingStore);
@@ -363,8 +391,11 @@ void CoordinatedGraphicsScene::updateSceneState()
     {
         for (auto& entry : layersByBacking.backingStore) {
             auto& compositionState = entry.backingStore.get().compositionState();
+#if USE(GBM)
+            updateBackingStore(entry.layer.get(), compositionState, entry.update, m_settings.useGbmTiles(), m_settings.gbmTileUpdatePolicy());
+#else
             updateBackingStore(entry.layer.get(), compositionState, entry.update);
-
+#endif
             if (compositionState.backingStore)
                 backingStoresWithPendingBuffers.add(*compositionState.backingStore);
         }

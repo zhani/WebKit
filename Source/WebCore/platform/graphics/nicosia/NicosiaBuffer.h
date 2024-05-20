@@ -45,6 +45,10 @@ namespace WebCore {
 class GLFence;
 }
 
+#if USE(GBM)
+struct gbm_bo;
+#endif
+
 namespace Nicosia {
 
 class Buffer : public ThreadSafeRefCounted<Buffer> {
@@ -58,6 +62,7 @@ public:
     WEBCORE_EXPORT virtual ~Buffer();
 
     virtual WebCore::IntSize size() const = 0;
+    virtual bool isBackedByGBM() const = 0;
     virtual bool isBackedByOpenGL() const = 0;
     virtual void platformWaitUntilPaintingComplete() { };
 
@@ -66,6 +71,7 @@ public:
     virtual void beginPainting() = 0;
     virtual void completePainting() = 0;
     virtual void waitUntilPaintingComplete() = 0;
+    virtual void map() {}
 
 #if USE(SKIA)
     SkSurface* surface() const { return m_surface.get(); }
@@ -100,6 +106,7 @@ public:
 private:
     UnacceleratedBuffer(const WebCore::IntSize&, Flags);
 
+    bool isBackedByGBM() const final { return false; }
     bool isBackedByOpenGL() const final { return false; }
     WebCore::IntSize size() const final { return m_size; }
 
@@ -133,6 +140,7 @@ public:
 private:
     AcceleratedBuffer(sk_sp<SkSurface>&&, Flags);
 
+    bool isBackedByGBM() const final { return false; }
     bool isBackedByOpenGL() const final { return true; }
     WebCore::IntSize size() const final;
 
@@ -142,6 +150,63 @@ private:
 
     unsigned m_textureID { 0 };
     std::unique_ptr<WebCore::GLFence> m_fence;
+};
+#endif
+
+#if USE(GBM)
+class GbmBuffer final : public Buffer {
+public:
+    WEBCORE_EXPORT static Ref<Buffer> create(const WebCore::IntSize&, Flags);
+    WEBCORE_EXPORT virtual ~GbmBuffer();
+
+    uint32_t stride() const { return m_stride; }
+    unsigned char* data();
+
+    unsigned textureID() {
+        if (!m_textureID)
+            createTexture();
+        return m_textureID;
+    }
+
+    struct gbm_bo* bo() const { return m_bo; }
+
+private:
+    GbmBuffer(const WebCore::IntSize&, Flags);
+
+    bool isBackedByGBM() const final { return true; }
+    bool isBackedByOpenGL() const final { return false; }
+    WebCore::IntSize size() const final { return m_size; }
+
+    void beginPainting() final;
+    void completePainting() final;
+    void waitUntilPaintingComplete() final;
+
+    void map() final;
+    void unmap();
+
+    void createGbmBuffer();
+    void createTexture();
+
+    WebCore::IntSize m_size;
+    int m_preferredFormat;
+    bool m_linearLayout;
+    unsigned m_textureID { 0 };
+    struct gbm_bo* m_bo = nullptr;
+    unsigned char* m_data = nullptr;
+    void* m_mapData = nullptr;
+    uint32_t m_stride;
+    uint64_t m_modifier;
+
+    enum class PaintingState {
+        InProgress,
+        Complete
+    };
+
+    struct {
+        Lock lock;
+        Condition condition;
+        PaintingState state { PaintingState::Complete };
+    } m_painting;
 };
 #endif
 

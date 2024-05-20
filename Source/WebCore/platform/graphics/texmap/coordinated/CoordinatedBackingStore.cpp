@@ -52,7 +52,14 @@ void CoordinatedBackingStoreTile::swapBuffers(TextureMapper& textureMapper)
 
         if (!m_texture || unscaledTileRect != rect()) {
             setRect(unscaledTileRect);
+#if USE(GBM)
+            if (m_gbmTileUpdatePolicy == GbmTileUpdatePolicy::ZeroCopy)
+                m_texture = textureMapper.acquireTextureFromPool(update.tileRect.size(), flags, m_useGbmTile, true);
+            else
+                m_texture = textureMapper.acquireTextureFromPool(update.tileRect.size(), flags, m_useGbmTile);
+#else
             m_texture = textureMapper.acquireTextureFromPool(update.tileRect.size(), flags);
+#endif
         } else if (update.buffer->supportsAlpha() == m_texture->isOpaque())
             m_texture->reset(update.tileRect.size(), flags);
 
@@ -67,16 +74,55 @@ void CoordinatedBackingStoreTile::swapBuffers(TextureMapper& textureMapper)
         }
 #endif
 
-        ASSERT(!update.buffer->isBackedByOpenGL());
-        auto& buffer = static_cast<Nicosia::UnacceleratedBuffer&>(*update.buffer);
-        m_texture->updateContents(buffer.data(), update.sourceRect, update.bufferOffset, buffer.stride());
-        update.buffer = nullptr;
+        if (m_useGbmTile) {
+            switch (m_gbmTileUpdatePolicy) {
+                case GbmTileUpdatePolicy::TexSubImage2D:
+                {
+                    auto& buffer = static_cast<Nicosia::UnacceleratedBuffer&>(*update.buffer);
+                    m_texture->updateContents(buffer.data(), update.sourceRect, update.bufferOffset, buffer.stride());
+                    break;
+                }
+                case GbmTileUpdatePolicy::GbmMap:
+                {
+                    auto& buffer = static_cast<Nicosia::UnacceleratedBuffer&>(*update.buffer);
+                    m_texture->updateGbmBufferContentsGbmMap(buffer.data(), update.sourceRect, update.bufferOffset, buffer.stride());
+                    break;
+                }
+                case GbmTileUpdatePolicy::MMap:
+                {
+                    auto& buffer = static_cast<Nicosia::UnacceleratedBuffer&>(*update.buffer);
+                    m_texture->updateGbmBufferContentsMMap(buffer.data(), update.sourceRect, update.bufferOffset, buffer.stride());
+                    break;
+                }
+                case GbmTileUpdatePolicy::ZeroCopy:
+                {
+                    RefPtr<Nicosia::GbmBuffer> buffer = static_pointer_cast<Nicosia::GbmBuffer>(update.buffer);
+                    m_texture->updateAndAdoptGbmBuffer(buffer);
+                    break;
+                }
+                default:
+                    fprintf(stderr, "GbmTileUpdatePolicy:Policy: unknown\n");
+                    break;
+            }
+            update.buffer = nullptr;
+        }
+        else {
+            fprintf(stderr, "GbmTileUpdatePolicy:Policy: none\n");
+            ASSERT(!update.buffer->isBackedByOpenGL());
+            auto& buffer = static_cast<Nicosia::UnacceleratedBuffer&>(*update.buffer);
+            m_texture->updateContents(buffer.data(), update.sourceRect, update.bufferOffset, buffer.stride());
+            update.buffer = nullptr;
+        }
     }
 }
 
 void CoordinatedBackingStore::createTile(uint32_t id, float scale)
 {
+#if USE(GBM)
+    m_tiles.add(id, CoordinatedBackingStoreTile(m_useGbmTiles, m_gbmTileUpdatePolicy, scale));
+#else
     m_tiles.add(id, CoordinatedBackingStoreTile(scale));
+#endif
     m_scale = scale;
 }
 
