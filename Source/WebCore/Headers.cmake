@@ -2175,6 +2175,8 @@ set(WebCore_PRIVATE_FRAMEWORK_HEADERS
     platform/graphics/opentype/OpenTypeMathData.h
     platform/graphics/opentype/OpenTypeVerticalData.h
 
+    platform/graphics/texmap/coordinated/GbmTileUpdatePolicy.h
+
     platform/graphics/transforms/AffineTransform.h
     platform/graphics/transforms/IdentityTransformOperation.h
     platform/graphics/transforms/Matrix3DTransformOperation.h

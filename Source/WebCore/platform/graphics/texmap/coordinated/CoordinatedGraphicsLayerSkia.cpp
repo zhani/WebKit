@@ -33,6 +33,7 @@
 #include "NicosiaBuffer.h"
 #include "PlatformDisplay.h"
 #include "SkiaAcceleratedBufferPool.h"
+#include "SkiaGbmBufferPool.h"
 #include <skia/core/SkCanvas.h>
 #include <skia/core/SkColorSpace.h>
 #include <skia/gpu/GrBackendSurface.h>
@@ -47,6 +48,28 @@
 #include <wtf/WorkerPool.h>
 
 namespace WebCore {
+
+bool isZeroCopyBuffers()
+{
+    static bool isZeroCopy;
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, [] {
+#if USE(GBM)
+        const char* gbmTileUpdatePolicy = getenv("WEBKIT_GBM_TILE_UPDATE_POLICY");
+        if (gbmTileUpdatePolicy) {
+            if(!strcmp(gbmTileUpdatePolicy, "ZeroCopy"))
+                isZeroCopy = true;
+            else
+                isZeroCopy = false;
+        } else
+#endif
+        {
+            isZeroCopy = false;
+        }
+    });
+
+    return isZeroCopy;
+}
 
 Ref<Nicosia::Buffer> CoordinatedGraphicsLayer::paintTile(const IntRect& tileRect, const IntRect& mappedTileRect, float contentsScale)
 {
@@ -86,32 +109,62 @@ Ref<Nicosia::Buffer> CoordinatedGraphicsLayer::paintTile(const IntRect& tileRect
         }
     }
 
-    // Skia/CPU - unaccelerated rendering.
-    auto buffer = Nicosia::UnacceleratedBuffer::create(tileRect.size(), contentsOpaque() ? Nicosia::Buffer::NoFlags : Nicosia::Buffer::SupportsAlpha);
+    if (isZeroCopyBuffers()) {
+        auto* gbmBufferPool = m_coordinator->skiaGbmBufferPool();
+        auto buffer = gbmBufferPool->acquireBuffer(tileRect.size(), !contentsOpaque());
 
-    // Non-blocking, multi-threaded variant.
-    if (auto* workerPool = m_coordinator->skiaUnacceleratedThreadedRenderingPool()) {
-        // Threaded rendering: record display lists, and asynchronously replay them using dedicated worker threads.
-        buffer->beginPainting();
+        // Non-blocking, multi-threaded variant.
+        if (auto* workerPool = m_coordinator->skiaUnacceleratedThreadedRenderingPool()) {
+            // Threaded rendering: record display lists, and asynchronously replay them using dedicated worker threads.
+            buffer->beginPainting();
 
-        auto recordingContext = makeUnique<DisplayList::DrawingContext>(tileRect.size());
-        paintIntoGraphicsContext(recordingContext->context());
+            auto recordingContext = makeUnique<DisplayList::DrawingContext>(tileRect.size());
+            paintIntoGraphicsContext(recordingContext->context());
 
-        workerPool->postTask([buffer = Ref { buffer }, recordingContext = WTFMove(recordingContext)] {
-            RELEASE_ASSERT(buffer->surface());
-            if (auto* canvas = buffer->surface()->getCanvas()) {
-                GraphicsContextSkia context(*canvas, RenderingMode::Unaccelerated, RenderingPurpose::LayerBacking);
-                recordingContext->replayDisplayList(context);
-            }
-            buffer->completePainting();
-        });
+            workerPool->postTask([buffer = Ref { *buffer }, recordingContext = WTFMove(recordingContext)] {
+                //RELEASE_ASSERT(buffer->surface());
+                buffer->map();
+                if (auto* canvas = buffer->surface()->getCanvas()) {
+                    GraphicsContextSkia context(*canvas, RenderingMode::Unaccelerated, RenderingPurpose::LayerBacking);
+                    recordingContext->replayDisplayList(context);
+                }
+                buffer->completePainting();
+            });
 
+            return Ref { *buffer };
+        }
+
+        // Blocking, single-thread variant.
+        paintBuffer(*buffer);
+        return Ref { *buffer };
+    } else {
+        // Skia/CPU - unaccelerated rendering.
+        auto buffer = Nicosia::UnacceleratedBuffer::create(tileRect.size(), contentsOpaque() ? Nicosia::Buffer::NoFlags : Nicosia::Buffer::SupportsAlpha);
+
+        // Non-blocking, multi-threaded variant.
+        if (auto* workerPool = m_coordinator->skiaUnacceleratedThreadedRenderingPool()) {
+            // Threaded rendering: record display lists, and asynchronously replay them using dedicated worker threads.
+            buffer->beginPainting();
+
+            auto recordingContext = makeUnique<DisplayList::DrawingContext>(tileRect.size());
+            paintIntoGraphicsContext(recordingContext->context());
+
+            workerPool->postTask([buffer = Ref { buffer }, recordingContext = WTFMove(recordingContext)] {
+                RELEASE_ASSERT(buffer->surface());
+                if (auto* canvas = buffer->surface()->getCanvas()) {
+                    GraphicsContextSkia context(*canvas, RenderingMode::Unaccelerated, RenderingPurpose::LayerBacking);
+                    recordingContext->replayDisplayList(context);
+                }
+                buffer->completePainting();
+            });
+
+            return buffer;
+        }
+
+        // Blocking, single-thread variant.
+        paintBuffer(buffer.get());
         return buffer;
     }
-
-    // Blocking, single-thread variant.
-    paintBuffer(buffer.get());
-    return buffer;
 }
 
 Ref<Nicosia::Buffer> CoordinatedGraphicsLayer::paintImage(Image& image)

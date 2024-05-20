@@ -29,17 +29,31 @@
 #include <wtf/RefCounted.h>
 #include <wtf/Vector.h>
 
+#if USE(GBM)
+#include "GbmTileUpdatePolicy.h"
+#endif
+
 namespace WebCore {
 
 class TextureMapper;
 
 class CoordinatedBackingStoreTile : public TextureMapperTile {
 public:
+#if USE(GBM)
+    explicit CoordinatedBackingStoreTile(bool useGbmTile = false, GbmTileUpdatePolicy gbmTileUpdatePolicy = GbmTileUpdatePolicy::TexSubImage2D, float scale = 1)
+        : TextureMapperTile(FloatRect())
+        , m_useGbmTile(useGbmTile)
+        , m_gbmTileUpdatePolicy(gbmTileUpdatePolicy)
+        , m_scale(scale)
+    {
+    }
+#else
     explicit CoordinatedBackingStoreTile(float scale = 1)
         : TextureMapperTile(FloatRect())
         , m_scale(scale)
     {
     }
+#endif
 
     float scale() const { return m_scale; }
 
@@ -55,6 +69,10 @@ public:
 
 private:
     Vector<Update> m_updates;
+#if USE(GBM)
+    bool m_useGbmTile;
+    GbmTileUpdatePolicy m_gbmTileUpdatePolicy;
+#endif
     float m_scale;
 };
 
@@ -64,7 +82,11 @@ public:
     void removeTile(uint32_t tileID);
     void removeAllTiles();
     void updateTile(uint32_t tileID, const IntRect&, const IntRect&, RefPtr<Nicosia::Buffer>&&, const IntPoint&);
+#if USE(GBM)
+    static Ref<CoordinatedBackingStore> create(bool useGbmTiles = false, GbmTileUpdatePolicy gbmTileUpdatePolicy = GbmTileUpdatePolicy::TexSubImage2D) { return adoptRef(*new CoordinatedBackingStore(useGbmTiles, gbmTileUpdatePolicy)); }
+#else
     static Ref<CoordinatedBackingStore> create() { return adoptRef(*new CoordinatedBackingStore); }
+#endif
     void commitTileOperations(TextureMapper&);
     void setSize(const FloatSize&);
     void paintToTextureMapper(TextureMapper&, const FloatRect&, const TransformationMatrix&, float) override;
@@ -72,9 +94,17 @@ public:
     void drawRepaintCounter(TextureMapper&, int repaintCount, const Color&, const FloatRect&, const TransformationMatrix&) override;
 
 private:
+#if USE(GBM)
+    CoordinatedBackingStore(bool useGbmTiles, GbmTileUpdatePolicy gbmTileUpdatePolicy)
+        : m_scale(1.)
+        , m_useGbmTiles(useGbmTiles)
+        , m_gbmTileUpdatePolicy(gbmTileUpdatePolicy)
+    { }
+#else
     CoordinatedBackingStore()
         : m_scale(1.)
     { }
+#endif
     void paintTilesToTextureMapper(Vector<TextureMapperTile*>&, TextureMapper&, const TransformationMatrix&, float, const FloatRect&);
     TransformationMatrix adjustedTransformForRect(const FloatRect&);
     FloatRect rect() const { return FloatRect(FloatPoint::zero(), m_size); }
@@ -86,6 +116,10 @@ private:
     FloatSize m_pendingSize;
     FloatSize m_size;
     float m_scale;
+#if USE(GBM)
+    bool m_useGbmTiles;
+    GbmTileUpdatePolicy m_gbmTileUpdatePolicy;
+#endif
 };
 
 } // namespace WebKit

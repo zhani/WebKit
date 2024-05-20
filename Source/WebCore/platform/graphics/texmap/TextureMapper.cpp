@@ -181,10 +181,17 @@ TextureMapper::TextureMapper()
 {
 }
 
+#if USE(GBM)
+RefPtr<BitmapTexture> TextureMapper::acquireTextureFromPool(const IntSize& size, OptionSet<BitmapTexture::Flags> flags, bool useGbmBacking, bool useExplicitGbmBuffer)
+{
+    return m_texturePool.acquireTexture(size, flags, useGbmBacking, useExplicitGbmBuffer);
+}
+#else
 RefPtr<BitmapTexture> TextureMapper::acquireTextureFromPool(const IntSize& size, OptionSet<BitmapTexture::Flags> flags)
 {
     return m_texturePool.acquireTexture(size, flags);
 }
+#endif
 
 #if USE(GRAPHICS_LAYER_WC)
 void TextureMapper::releaseUnusedTexturesNow()

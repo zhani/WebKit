@@ -55,7 +55,7 @@ public:
 
 class CoordinatedGraphicsScene : public ThreadSafeRefCounted<CoordinatedGraphicsScene>, public WebCore::TextureMapperPlatformLayerProxy::Compositor {
 public:
-    explicit CoordinatedGraphicsScene(CoordinatedGraphicsSceneClient*);
+    explicit CoordinatedGraphicsScene(CoordinatedGraphicsSceneClient*, WebCore::Settings&);
     virtual ~CoordinatedGraphicsScene();
 
     void applyStateChanges(const Vector<RefPtr<Nicosia::Scene>>&);
@@ -80,6 +80,8 @@ private:
     void ensureRootLayer();
 
     void onNewBufferAvailable() override;
+
+    WebCore::Settings& m_settings;
 
     struct {
         RefPtr<Nicosia::Scene> scene;

@@ -369,6 +369,11 @@ void LayerTreeHost::frameComplete()
     m_compositor->frameComplete();
 }
 
+WebCore::Settings& LayerTreeHost::settings()
+{
+    return m_webPage.corePage()->settings();
+}
+
 uint64_t LayerTreeHost::nativeSurfaceHandleForCompositing()
 {
     m_surface->initialize();

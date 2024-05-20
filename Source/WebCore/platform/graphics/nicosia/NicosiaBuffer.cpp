@@ -51,6 +51,16 @@
 #endif
 #endif
 
+#if USE(GBM)
+#include "DRMDeviceManager.h"
+#include "PlatformDisplay.h"
+
+#include <gbm.h>
+#include <drm_fourcc.h>
+#include <wtf/SafeStrerror.h>
+#include <wtf/unix/UnixFileDescriptor.h>
+#endif
+
 namespace Nicosia {
 
 Lock Buffer::s_layersMemoryUsageLock;
@@ -184,6 +194,206 @@ void AcceleratedBuffer::waitUntilPaintingComplete()
 
     m_fence->wait(WebCore::GLFence::FlushCommands::No);
     m_fence = nullptr;
+}
+#endif
+
+#if USE(GBM)
+Ref<Buffer> GbmBuffer::create(const WebCore::IntSize& size, Flags flags)
+{
+    return adoptRef(*new GbmBuffer(size, flags));
+}
+
+GbmBuffer::GbmBuffer(const WebCore::IntSize& size, Flags flags)
+    : Buffer(flags)
+    , m_size(size)
+    , m_preferredFormat(DRM_FORMAT_ARGB8888)
+    , m_linearLayout(true)
+    , m_modifier(DRM_FORMAT_MOD_INVALID)
+{
+    createGbmBuffer();
+
+    const auto checkedArea = size.area() * 4;
+
+    {
+        Locker locker { s_layersMemoryUsageLock };
+        s_currentLayersMemoryUsage += checkedArea;
+        s_maxLayersMemoryUsage = std::max(s_maxLayersMemoryUsage, s_currentLayersMemoryUsage);
+    }
+}
+
+void GbmBuffer::createGbmBuffer()
+{
+    auto* device = DRMDeviceManager::singleton().mainGBMDeviceNode(WebCore::DRMDeviceManager::NodeType::Render);
+    if (!device) {
+        WTFLogAlways("Failed to create GBM buffer of size %dx%d: no GBM device found", m_size.width(), m_size.height());
+        return;
+    }
+
+    uint64_t* modifiers = NULL;
+    int modifiersCount = 0;
+
+    if (m_linearLayout) {
+        modifiers = static_cast<uint64_t*>(malloc(sizeof *modifiers));
+        if (modifiers) {
+            *modifiers = DRM_FORMAT_MOD_LINEAR;
+            modifiersCount = 1;
+        }
+    }
+
+    m_modifier = DRM_FORMAT_MOD_INVALID;
+    uint32_t gbm_flags = GBM_BO_USE_RENDERING;
+    if (modifiersCount > 0) {
+        m_bo = gbm_bo_create_with_modifiers2(device, m_size.width(), m_size.height(), m_preferredFormat, modifiers, modifiersCount, gbm_flags);
+        if (m_bo)
+            m_modifier = gbm_bo_get_modifier(m_bo);
+    }
+
+    if (!m_bo) {
+        gbm_flags |= GBM_BO_USE_LINEAR;
+        m_bo = gbm_bo_create(device, m_size.width(), m_size.height(), m_preferredFormat, gbm_flags);
+    }
+
+    if (!m_bo) {
+        WTFLogAlways("Failed to create GBM buffer of size %dx%d: %s", m_size.width(), m_size.height(), safeStrerror(errno).data());
+        return;
+    }
+}
+
+GbmBuffer::~GbmBuffer()
+{
+    glDeleteTextures(1, &m_textureID);
+    m_textureID = 0;
+
+    if (m_bo != nullptr) {
+        unmap();
+        gbm_bo_destroy(m_bo);
+    }
+
+    const auto checkedArea = m_size.area().value() * 4;
+    {
+        Locker locker { s_layersMemoryUsageLock };
+        s_currentLayersMemoryUsage -= checkedArea;
+    }
+}
+
+unsigned char* GbmBuffer::data()
+{
+    map();
+    return m_data;
+}
+
+void GbmBuffer::beginPainting()
+{
+    Locker locker { m_painting.lock };
+    ASSERT(m_painting.state == PaintingState::Complete);
+    if (m_data == nullptr)
+        map();
+
+    m_painting.state = PaintingState::InProgress;
+}
+
+void GbmBuffer::completePainting()
+{
+    Locker locker { m_painting.lock };
+    ASSERT(m_painting.state == PaintingState::InProgress);
+    m_painting.state = PaintingState::Complete;
+    m_painting.condition.notifyOne();
+}
+
+void GbmBuffer::waitUntilPaintingComplete()
+{
+    Locker locker { m_painting.lock };
+    m_painting.condition.wait(m_painting.lock, [this] {
+        return m_painting.state == PaintingState::Complete;
+    });
+    unmap();
+}
+
+void GbmBuffer::map()
+{
+    if (!m_surface) {
+        auto imageInfo = SkImageInfo::MakeN32Premul(m_size.width(), m_size.height(), SkColorSpace::MakeSRGB());
+        // FIXME: ref buffer and unref on release proc?
+        m_data = static_cast<unsigned char*>(gbm_bo_map(m_bo, 0, 0, gbm_bo_get_width(m_bo), gbm_bo_get_height(m_bo), GBM_BO_TRANSFER_READ_WRITE, &m_stride, &m_mapData));
+        SkSurfaceProps properties = { 0, WebCore::FontRenderOptions::singleton().subpixelOrder() };
+        m_surface = SkSurfaces::WrapPixels(imageInfo, m_data, m_stride, &properties);
+    }
+}
+
+void GbmBuffer::unmap()
+{
+    if (m_mapData != nullptr) {
+        gbm_bo_unmap(m_bo, m_mapData);
+        m_mapData = nullptr;
+        m_data = nullptr;
+        m_surface.reset();
+    }
+}
+
+void GbmBuffer::createTexture()
+{
+    if (!m_textureID) {
+        Vector<UnixFileDescriptor> fds;
+        Vector<uint32_t> offsets;
+        Vector<uint32_t> strides;
+        uint32_t format = gbm_bo_get_format(m_bo);
+        int planeCount = gbm_bo_get_plane_count(m_bo);
+
+        Vector<EGLAttrib> attributes = {
+            EGL_WIDTH, static_cast<EGLAttrib>(gbm_bo_get_width(m_bo)),
+            EGL_HEIGHT, static_cast<EGLAttrib>(gbm_bo_get_height(m_bo)),
+            EGL_LINUX_DRM_FOURCC_EXT, static_cast<EGLAttrib>(format),
+        };
+
+#define ADD_PLANE_ATTRIBUTES(planeIndex) { \
+        fds.append(UnixFileDescriptor { gbm_bo_get_fd_for_plane(m_bo, planeIndex), UnixFileDescriptor::Adopt }); \
+        offsets.append(gbm_bo_get_offset(m_bo, planeIndex)); \
+        strides.append(gbm_bo_get_stride_for_plane(m_bo, planeIndex)); \
+        std::array<EGLAttrib, 6> planeAttributes { \
+            EGL_DMA_BUF_PLANE##planeIndex##_FD_EXT, fds.last().value(), \
+            EGL_DMA_BUF_PLANE##planeIndex##_OFFSET_EXT, static_cast<EGLAttrib>(offsets.last()), \
+            EGL_DMA_BUF_PLANE##planeIndex##_PITCH_EXT, static_cast<EGLAttrib>(strides.last()) \
+        }; \
+        attributes.append(std::span<const EGLAttrib> { planeAttributes }); \
+        if (m_modifier != DRM_FORMAT_MOD_INVALID) { \
+            std::array<EGLAttrib, 4> modifierAttributes { \
+                EGL_DMA_BUF_PLANE##planeIndex##_MODIFIER_HI_EXT, static_cast<EGLAttrib>(m_modifier >> 32), \
+                EGL_DMA_BUF_PLANE##planeIndex##_MODIFIER_LO_EXT, static_cast<EGLAttrib>(m_modifier & 0xffffffff) \
+            }; \
+            attributes.append(std::span<const EGLAttrib> { modifierAttributes }); \
+        } \
+        }
+
+        if (planeCount > 0)
+            ADD_PLANE_ATTRIBUTES(0);
+        if (planeCount > 1)
+            ADD_PLANE_ATTRIBUTES(1);
+        if (planeCount > 2)
+            ADD_PLANE_ATTRIBUTES(2);
+        if (planeCount > 3)
+            ADD_PLANE_ATTRIBUTES(3);
+
+#undef ADD_PLANE_ATTRIBS
+
+        attributes.append(EGL_NONE);
+
+        auto& display = WebCore::PlatformDisplay::sharedDisplayForCompositing();
+        auto image = display.createEGLImage(EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attributes);
+
+        if (!image) {
+            WTFLogAlways("Failed to create EGL image for DMABufs with size %dx%d", m_size.width(), m_size.height());
+            return;
+        }
+
+        glGenTextures(1, &m_textureID);
+        glBindTexture(GL_TEXTURE_2D, m_textureID);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+    }
 }
 #endif
 

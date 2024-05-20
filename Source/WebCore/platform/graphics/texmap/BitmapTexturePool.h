@@ -31,6 +31,10 @@
 #include "BitmapTexture.h"
 #include <wtf/RunLoop.h>
 
+namespace Nicosia {
+class GbmBuffer;
+}
+
 namespace WebCore {
 
 class IntSize;
@@ -40,7 +44,11 @@ class BitmapTexturePool {
 public:
     BitmapTexturePool();
 
+#if USE(GBM)
+    RefPtr<BitmapTexture> acquireTexture(const IntSize&, OptionSet<BitmapTexture::Flags>, bool useGbmBacking = false, bool useExplicitGbmBuffer = false);
+#else
     RefPtr<BitmapTexture> acquireTexture(const IntSize&, OptionSet<BitmapTexture::Flags>);
+#endif
     void releaseUnusedTexturesTimerFired();
 
 private:

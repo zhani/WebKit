@@ -54,6 +54,10 @@
 #include "DataDetectorType.h"
 #endif
 
+#if USE(GBM)
+#include "GbmTileUpdatePolicy.h"
+#endif
+
 namespace WebCore {
 
 class Page;

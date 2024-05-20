@@ -58,7 +58,14 @@ static GHashTable* openViews;
 #if ENABLE_WPE_PLATFORM
 static gboolean useWPEPlatformAPI;
 #endif
-
+#if USE_GBM
+static const char* gbmTileUpdatePolicy;
+#endif
+/*
+TexSubImage2D,
+    GbmMap,
+    DrmIoctl,
+    ZeroCopy*/
 static const GOptionEntry commandLineOptions[] =
 {
     { "headless", 'h', 0, G_OPTION_ARG_NONE, &headlessMode, "Run in headless mode", nullptr },
@@ -76,6 +83,9 @@ static const GOptionEntry commandLineOptions[] =
     { "features", 'F', 0, G_OPTION_ARG_STRING, &featureList, "Enable or disable WebKit features (hint: pass 'help' for a list)", "FEATURE-LIST" },
 #if ENABLE_WPE_PLATFORM
     { "use-wpe-platform-api", 0, 0, G_OPTION_ARG_NONE, &useWPEPlatformAPI, "Use the WPE platform API", nullptr },
+#endif
+#if USE_GBM
+    { "gbm-tile-update-policy", 0, 0, G_OPTION_ARG_STRING, &gbmTileUpdatePolicy, "GBM tile update policy (textsubimage2d, gbmmap, drmioctl, zerocopy). Default: textsubimage2d", "GBM-TILE-UPDATE-POLICY" },
 #endif
     { "version", 'v', 0, G_OPTION_ARG_NONE, &printVersion, "Print the WPE version", nullptr },
     { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &uriArguments, nullptr, "[URL]" },

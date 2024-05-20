@@ -42,6 +42,7 @@
 namespace WebCore {
 class BitmapTexture;
 class SkiaAcceleratedBufferPool;
+class SkiaGbmBufferPool;
 }
 #endif
 
@@ -64,6 +65,7 @@ public:
     virtual Nicosia::PaintingEngine& paintingEngine() = 0;
 #elif USE(SKIA)
     virtual SkiaAcceleratedBufferPool* skiaAcceleratedBufferPool() const = 0;
+    virtual SkiaGbmBufferPool* skiaGbmBufferPool() const = 0;
     virtual WorkerPool* skiaUnacceleratedThreadedRenderingPool() const = 0;
 #endif
 
