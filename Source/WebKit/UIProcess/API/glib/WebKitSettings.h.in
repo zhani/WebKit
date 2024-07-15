@@ -575,6 +575,20 @@ webkit_settings_apply_from_key_file                            (WebKitSettings  
                                                                 const gchar     *group_name,
                                                                 GError         **error);
 
+WEBKIT_API guint32
+webkit_settings_get_default_tile_height                        (WebKitSettings  *settings);
+
+WEBKIT_API void
+webkit_settings_set_default_tile_height                        (WebKitSettings  *settings,
+                                                                guint32          tile_height);
+
+WEBKIT_API guint32
+webkit_settings_get_default_tile_width                         (WebKitSettings  *settings);
+
+WEBKIT_API void
+webkit_settings_set_default_tile_width                         (WebKitSettings  *settings,
+                                                                guint32          tile_width);
+
 G_END_DECLS
 
 #endif /* WebKitSettings_h */

@@ -181,6 +181,8 @@ enum {
     PROP_MEDIA_CONTENT_TYPES_REQUIRING_HARDWARE_SUPPORT,
     PROP_ENABLE_WEBRTC,
     PROP_DISABLE_WEB_SECURITY,
+    PROP_DEFAULT_TILE_HEIGHT,
+    PROP_DEFAULT_TILE_WIDTH,
     N_PROPERTIES,
 };
 
@@ -412,6 +414,12 @@ ALLOW_DEPRECATED_DECLARATIONS_BEGIN
     case PROP_DISABLE_WEB_SECURITY:
         webkit_settings_set_disable_web_security(settings, g_value_get_boolean(value));
         break;
+    case PROP_DEFAULT_TILE_HEIGHT:
+        webkit_settings_set_default_tile_height(settings, g_value_get_uint(value));
+        break;
+    case PROP_DEFAULT_TILE_WIDTH:
+        webkit_settings_set_default_tile_width(settings, g_value_get_uint(value));
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, propId, paramSpec);
         break;
@@ -622,6 +630,12 @@ ALLOW_DEPRECATED_DECLARATIONS_BEGIN
         break;
     case PROP_DISABLE_WEB_SECURITY:
         g_value_set_boolean(value, webkit_settings_get_disable_web_security(settings));
+        break;
+    case PROP_DEFAULT_TILE_HEIGHT:
+        g_value_set_uint(value, webkit_settings_get_default_tile_height(settings));
+        break;
+    case PROP_DEFAULT_TILE_WIDTH:
+        g_value_set_uint(value, webkit_settings_get_default_tile_width(settings));
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, propId, paramSpec);
@@ -1667,6 +1681,34 @@ static void webkit_settings_class_init(WebKitSettingsClass* klass)
         _("Disable web security"),
         _("Whether web security should be disabled."),
         !FEATURE_DEFAULT(WebSecurityEnabled),
+        readWriteConstructParamFlags);
+
+     /**
+     * WebKitSettings:default-tile-height:
+     *
+     * The default tile height pixels to use for web page composition layer tiling.
+     *
+     * Since: 2.46
+     */
+    sObjProperties[PROP_DEFAULT_TILE_HEIGHT] = g_param_spec_uint(
+        "default-tile-height",
+        _("Default tile height"),
+        _("The default tile height pixels to use for web page composition layer tiling."),
+        64, G_MAXUINT, 512,
+        readWriteConstructParamFlags);
+
+    /**
+     * WebKitSettings:default-tile-width:
+     *
+     * The default tile width pixels to use for web page composition layer tiling.
+     *
+     * Since: 2.46
+     */
+    sObjProperties[PROP_DEFAULT_TILE_WIDTH] = g_param_spec_uint(
+        "default-tile-width",
+        _("Default tile width"),
+        _("The default tile width pixels to use for web page composition layer tiling."),
+        64, G_MAXUINT, 512,
         readWriteConstructParamFlags);
 
     g_object_class_install_properties(gObjectClass, N_PROPERTIES, sObjProperties);
@@ -4350,4 +4392,82 @@ gboolean webkit_settings_apply_from_key_file(WebKitSettings* settings, GKeyFile*
 
     g_object_setv(G_OBJECT(settings), propertyNames->len, const_cast<const char**>(reinterpret_cast<char**>(propertyNames->pdata)), reinterpret_cast<GValue*>(values->data));
     return TRUE;
+}
+
+/**
+ * webkit_settings_get_default_tile_height:
+ * @settings: a #WebKitSettings
+ *
+ * Gets the #WebKitSettings:default-tile-height property.
+ *
+ * Returns: Returns default tile height, in pixels.
+ *
+ * Since: 2.46
+ */
+guint32 webkit_settings_get_default_tile_height(WebKitSettings* settings)
+{
+    g_return_val_if_fail(WEBKIT_IS_SETTINGS(settings), 0);
+
+    return settings->priv->preferences->defaultTileHeight();
+}
+
+/**
+ * webkit_settings_set_default_tile_height:
+ * @settings: a #WebKitSettings
+ * @tile_height: default tile height to be set in pixels
+ *
+ * Set the #WebKitSettings:default-tile-height property.
+ *
+ * Since: 2.46
+ */
+void webkit_settings_set_default_tile_height(WebKitSettings* settings, guint32 tileHeight)
+{
+    g_return_if_fail(WEBKIT_IS_SETTINGS(settings));     
+
+    WebKitSettingsPrivate* priv = settings->priv;
+    uint32_t currentHeight = priv->preferences->defaultTileHeight();
+    if (currentHeight == tileHeight)
+        return;
+
+    priv->preferences->setDefaultTileHeight(tileHeight);
+    g_object_notify_by_pspec(G_OBJECT(settings), sObjProperties[PROP_DEFAULT_TILE_HEIGHT]);
+}
+
+/**
+ * webkit_settings_get_default_tile_width:
+ * @settings: a #WebKitSettings
+ *
+ * Gets the #WebKitSettings:default-tile-width property.
+ *
+ * Returns: Returns default tile width, in pixels.
+ *
+ * Since: 2.46
+ */
+guint32 webkit_settings_get_default_tile_width(WebKitSettings* settings)
+{
+    g_return_val_if_fail(WEBKIT_IS_SETTINGS(settings), 0);
+
+    return settings->priv->preferences->defaultTileWidth();
+}
+
+/**
+ * webkit_settings_set_default_tile_width:
+ * @settings: a #WebKitSettings
+ * @tile_width: default tile width to be set in pixels
+ *
+ * Set the #WebKitSettings:default-tile-width property.
+ *
+ * Since: 2.46
+ */
+void webkit_settings_set_default_tile_width(WebKitSettings* settings, guint32 tileWidth)
+{
+    g_return_if_fail(WEBKIT_IS_SETTINGS(settings));
+
+    WebKitSettingsPrivate* priv = settings->priv;
+    uint32_t currentWidth = priv->preferences->defaultTileWidth();
+    if (currentWidth == tileWidth)
+        return;
+
+    priv->preferences->setDefaultTileWidth(tileWidth);
+    g_object_notify_by_pspec(G_OBJECT(settings), sObjProperties[PROP_DEFAULT_TILE_WIDTH]);
 }

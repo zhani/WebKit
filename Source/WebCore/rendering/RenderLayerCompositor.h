@@ -334,6 +334,11 @@ public:
     float zoomedOutPageScaleFactor() const override;
     void didChangePlatformLayerForLayer(const GraphicsLayer*) override { }
 
+#if USE(COORDINATED_GRAPHICS)
+    uint32_t defaultTileHeight() const override;
+    uint32_t defaultTileWidth() const override;
+#endif
+
     void layerTiledBackingUsageChanged(const GraphicsLayer*, bool /*usingTiledBacking*/);
     
     bool acceleratedDrawingEnabled() const { return m_acceleratedDrawingEnabled; }

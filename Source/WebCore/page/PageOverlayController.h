@@ -80,6 +80,11 @@ public:
     WEBCORE_EXPORT bool copyAccessibilityAttributeBoolValueForPoint(String attribute, FloatPoint, bool& value);
     WEBCORE_EXPORT Vector<String> copyAccessibilityAttributesNames(bool parameterizedNames);
 
+#if USE(COORDINATED_GRAPHICS)
+    uint32_t defaultTileHeight() const override;
+    uint32_t defaultTileWidth() const override;
+#endif
+
 private:
     void createRootLayersIfNeeded();
 

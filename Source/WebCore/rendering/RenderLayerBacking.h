@@ -262,6 +262,11 @@ public:
     void verifyNotPainting() override;
 #endif
 
+#if USE(COORDINATED_GRAPHICS)
+    uint32_t defaultTileHeight() const override;
+    uint32_t defaultTileWidth() const override;
+#endif
+
     WEBCORE_EXPORT LayoutRect contentsBox() const;
     
     // For informative purposes only.

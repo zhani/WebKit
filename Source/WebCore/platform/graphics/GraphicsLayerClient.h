@@ -144,6 +144,15 @@ public:
     // while painting.
     virtual void verifyNotPainting() { }
 #endif
+
+#if USE(COORDINATED_GRAPHICS)
+    virtual uint32_t defaultTileHeight() const { return kDefaultTileHeight; };
+    virtual uint32_t defaultTileWidth() const { return kDefaultTileWidth; };
+
+    static const int kDefaultTileHeight = 512;
+    static const int kDefaultTileWidth = 512;
+#endif
+
 };
 
 } // namespace WebCore

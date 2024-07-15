@@ -4008,6 +4008,18 @@ void RenderLayerBacking::verifyNotPainting()
 }
 #endif
 
+#if USE(COORDINATED_GRAPHICS)
+uint32_t RenderLayerBacking::defaultTileHeight() const
+{
+    return renderer().settings().defaultTileHeight();
+}
+
+uint32_t RenderLayerBacking::defaultTileWidth() const
+{
+    return renderer().settings().defaultTileWidth();
+}
+#endif
+
 bool RenderLayerBacking::startAnimation(double timeOffset, const Animation& animation, const BlendingKeyframes& keyframes)
 {
     if (renderer().capturedInViewTransition())

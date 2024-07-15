@@ -2113,6 +2113,30 @@ DefaultTextEncodingName:
     WebCore:
       default: '{ }'
 
+DefaultTileHeight:
+  type: uint32_t
+  status: embedder
+  condition: USE(COORDINATED_GRAPHICS)
+  defaultValue:
+    WebKitLegacy:
+      default: 512
+    WebKit:
+      default: 512
+    WebCore:
+      default: 512
+
+DefaultTileWidth:
+  type: uint32_t
+  status: embedder
+  condition: USE(COORDINATED_GRAPHICS)
+  defaultValue:
+    WebKitLegacy:
+      default: 512
+    WebKit:
+      default: 512
+    WebCore:
+      default: 512
+
 DeprecateAESCFBWebCryptoEnabled:
   type: bool
   status: stable

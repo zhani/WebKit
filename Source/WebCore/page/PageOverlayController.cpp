@@ -405,6 +405,18 @@ Vector<String> PageOverlayController::copyAccessibilityAttributesNames(bool para
     return { };
 }
 
+#if USE(COORDINATED_GRAPHICS)
+uint32_t PageOverlayController::defaultTileHeight() const
+{
+    return m_page->settings().defaultTileHeight();
+}
+
+uint32_t PageOverlayController::defaultTileWidth() const
+{
+    return m_page->settings().defaultTileWidth();
+}
+#endif
+
 void PageOverlayController::paintContents(const GraphicsLayer* graphicsLayer, GraphicsContext& graphicsContext, const FloatRect& clipRect, OptionSet<GraphicsLayerPaintBehavior>)
 {
     for (auto overlayAndGraphicsLayer : m_overlayGraphicsLayers) {

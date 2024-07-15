@@ -840,6 +840,18 @@ void RenderLayerCompositor::didChangePlatformLayerForLayer(RenderLayer& layer, c
         scrollingCoordinator->setNodeLayers(nodeID, { backing->graphicsLayer() });
 }
 
+#if USE(COORDINATED_GRAPHICS)
+uint32_t RenderLayerCompositor::defaultTileHeight() const
+{
+    return m_renderView.settings().defaultTileHeight();
+}
+
+uint32_t RenderLayerCompositor::defaultTileWidth() const
+{
+    return m_renderView.settings().defaultTileWidth();
+}
+#endif
+
 void RenderLayerCompositor::didPaintBacking(RenderLayerBacking*)
 {
     auto& frameView = m_renderView.frameView();

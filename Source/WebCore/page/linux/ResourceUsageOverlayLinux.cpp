@@ -87,6 +87,22 @@ public:
 
     ~ResourceUsageOverlayPainter() = default;
 
+#if USE(COORDINATED_GRAPHICS)
+    uint32_t defaultTileHeight() const override
+    {
+        if (m_overlay.overlay().page())
+            return m_overlay.overlay().page()->settings().defaultTileHeight();
+        return GraphicsLayerClient::defaultTileHeight();
+    }
+
+    uint32_t defaultTileWidth() const override
+    {
+        if (m_overlay.overlay().page())
+            return m_overlay.overlay().page()->settings().defaultTileWidth();
+        return GraphicsLayerClient::defaultTileWidth();
+    }
+#endif
+
 private:
     void paintContents(const GraphicsLayer*, GraphicsContext& context, const FloatRect& clip, OptionSet<GraphicsLayerPaintBehavior>) override
     {
