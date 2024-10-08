@@ -39,6 +39,7 @@ template<> struct IsDeprecatedWeakRefSmartPointerException<WebCore::TextureMappe
 namespace WebCore {
 
 class TextureMapper;
+class TextureMapperFlattenedLayer;
 class TextureMapperPaintOptions;
 class TextureMapperPlatformLayer;
 
@@ -138,6 +139,11 @@ private:
         return const_cast<TextureMapperLayer&>(*this);
     }
 
+    void flattenDescendantLayersIfNecessary(TextureMapperPaintOptions&);
+    void flatten(TextureMapperPaintOptions&);
+    void computeFlattenedRegion(Region&);
+    void freeFlattenedDescendantLayers();
+
     struct ComputeTransformData;
     void computeTransformsRecursive(ComputeTransformData&);
 
@@ -178,6 +184,20 @@ private:
 
     bool shouldBlend() const;
 
+    bool flattensAsLeafOf3DScene() const;
+    bool flattensAsLeafOf3DSceneOr3DPerspective() const;
+    bool has3DLocalTransform() const;
+
+    inline bool preserves3D() const
+    {
+        return m_state.preserves3D;
+    }
+
+    inline bool isFlattened() const
+    {
+        return m_flattenedLayer != nullptr;
+    }
+
     inline FloatRect layerRect() const
     {
         return FloatRect(FloatPoint::zero(), m_state.size);
@@ -188,6 +208,7 @@ private:
     WeakPtr<TextureMapperLayer> m_effectTarget;
     TextureMapperBackingStore* m_backingStore { nullptr };
     TextureMapperPlatformLayer* m_contentsLayer { nullptr };
+    std::unique_ptr<TextureMapperFlattenedLayer> m_flattenedLayer;
     float m_currentOpacity { 1.0 };
     FilterOperations m_currentFilters;
     float m_centerZ { 0 };

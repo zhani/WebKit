@@ -67,6 +67,63 @@ struct TextureMapperLayer::ComputeTransformData {
     }
 };
 
+class TextureMapperFlattenedLayer final {
+    WTF_MAKE_FAST_ALLOCATED;
+public:
+    explicit TextureMapperFlattenedLayer(const IntRect& rect)
+        : m_rect(rect)
+    { }
+
+    inline IntRect layerRect() const
+    {
+        return m_rect;
+    }
+
+    void grabLayerTree(TextureMapperPaintOptions& options, const std::function<void(TextureMapperPaintOptions&)>& paintFunction)
+    {
+        IntSize maxTextureSize = options.textureMapper.maxTextureSize();
+        for (int x = m_rect.x(); x < m_rect.maxX(); x += maxTextureSize.width()) {
+            for (int y = m_rect.y(); y < m_rect.maxY(); y += maxTextureSize.height()) {
+                IntRect tileRect({ x, y }, maxTextureSize);
+                tileRect.intersect(m_rect);
+
+                auto surface = options.textureMapper.acquireTextureFromPool(tileRect.size(), { BitmapTexture::Flags::SupportsAlpha });
+                {
+                    SetForScope scopedSurface(options.surface, surface.ptr());
+                    SetForScope scopedOffset(options.offset, -toIntSize(tileRect.location()));
+                    SetForScope scopedOpacity(options.opacity, 1);
+
+                    options.textureMapper.bindSurface(options.surface.get());
+                    paintFunction(options);
+                }
+                m_textures.append(WTFMove(surface));
+            }
+        }
+        options.textureMapper.bindSurface(options.surface.get());
+    }
+
+    void paintToTextureMapper(TextureMapper& textureMapper, const FloatRect& targetRect, TransformationMatrix& modelViewMatrix, float opacity)
+    {
+        int textureIndex = 0;
+        IntSize maxTextureSize = textureMapper.maxTextureSize();
+        auto allEdgesExposed = m_rect.width() <= maxTextureSize.width() && m_rect.height() <= maxTextureSize.height() ? TextureMapper::AllEdgesExposed::Yes : TextureMapper::AllEdgesExposed::No;
+        for (int x = m_rect.x(); x < m_rect.maxX(); x += maxTextureSize.width()) {
+            for (int y = m_rect.y(); y < m_rect.maxY(); y += maxTextureSize.height()) {
+                IntRect tileRect({ x, y }, maxTextureSize);
+                tileRect.intersect(m_rect);
+
+                TransformationMatrix adjustedTransform = modelViewMatrix * TransformationMatrix::rectToRect(m_rect, targetRect);
+                textureMapper.drawTexture(*m_textures[textureIndex++].get(), tileRect, adjustedTransform, opacity, allEdgesExposed);
+            }
+        }
+    }
+
+private:
+
+    IntRect m_rect;
+    Vector<RefPtr<BitmapTexture>> m_textures;
+};
+
 TextureMapperLayer::TextureMapperLayer(Damage::ShouldPropagate propagateDamage)
     : m_propagateDamage(propagateDamage)
 {
@@ -78,6 +135,88 @@ TextureMapperLayer::~TextureMapperLayer()
         child->m_parent = nullptr;
 
     removeFromParent();
+}
+
+void TextureMapperLayer::flattenDescendantLayersIfNecessary(TextureMapperPaintOptions& options)
+{
+    // Traverse all children in depth first, post-order
+    for (auto* child : m_children) {
+        child->flattenDescendantLayersIfNecessary(options);
+
+        if (child->flattensAsLeafOf3DSceneOr3DPerspective())
+            child->flatten(options);
+    }
+}
+
+void TextureMapperLayer::flatten(TextureMapperPaintOptions& options)
+{
+    // Flattens descendant layers to into this planes z=0 2D root.
+    if (m_flattenedLayer)
+        m_flattenedLayer = nullptr;
+
+    // Reset transformations as this layer is root 2D
+    SetForScope scopedLocalTransform(m_layerTransforms.localTransform, TransformationMatrix());
+    m_layerTransforms.combined = { };
+    m_layerTransforms.combinedForChildren = { };
+#if USE(COORDINATED_GRAPHICS)
+    SetForScope scopedFutureLocalTransform(m_layerTransforms.futureLocalTransform, TransformationMatrix());
+    m_layerTransforms.futureLocalTransform = { };
+    m_layerTransforms.futureCombined = { };
+    m_layerTransforms.futureCombinedForChildren = { };
+#endif
+    ComputeTransformData data;
+    if (m_state.maskLayer)
+        m_state.maskLayer->computeTransformsRecursive(data);
+    if (m_state.replicaLayer)
+        m_state.replicaLayer->computeTransformsRecursive(data);
+    if (m_state.backdropLayer)
+        m_state.backdropLayer->computeTransformsRecursive(data);
+    for (auto* child : m_children)
+        child->computeTransformsRecursive(data);
+    options.textureMapper.setDepthRange(data.zNear, data.zFar);
+
+    Region layerRegion;
+    computeFlattenedRegion(layerRegion);
+
+    auto flattenedLayerRect = layerRegion.bounds();
+    auto flattenedLayer = WTF::makeUnique<TextureMapperFlattenedLayer>(flattenedLayerRect);
+
+    flattenedLayer->grabLayerTree(options, [&](TextureMapperPaintOptions& options) {
+        paintSelfAndChildren(options);
+    });
+
+    m_flattenedLayer = WTFMove(flattenedLayer);
+}
+
+void TextureMapperLayer::computeFlattenedRegion(Region& region)
+{
+    auto rect = isFlattened() ? m_flattenedLayer->layerRect() : layerRect();
+
+    bool shouldExpand = m_currentFilters.hasOutsets() && !m_state.masksToBounds && !m_state.maskLayer;
+    if (shouldExpand) {
+        auto outsets = m_currentFilters.outsets();
+        rect.move(-outsets.left(), -outsets.top());
+        rect.expand(outsets.left() + outsets.right(), outsets.top() + outsets.bottom());
+    }
+
+    region.unite(enclosingIntRect(m_layerTransforms.combined.mapRect(rect)));
+
+    if (!m_state.masksToBounds && !m_state.maskLayer) {
+        if (m_state.replicaLayer)
+            region.unite(enclosingIntRect(m_state.replicaLayer->m_layerTransforms.combined.mapRect(m_state.replicaLayer->layerRect())));
+
+        for (auto* child : m_children)
+            child->computeFlattenedRegion(region);
+    }
+}
+
+void TextureMapperLayer::freeFlattenedDescendantLayers()
+{
+    if (m_flattenedLayer)
+        m_flattenedLayer = nullptr;
+
+    for (auto* child : m_children)
+        child->freeFlattenedDescendantLayers();
 }
 
 void TextureMapperLayer::computeTransformsRecursive(ComputeTransformData& data)
@@ -108,7 +247,7 @@ void TextureMapperLayer::computeTransformsRecursive(ComputeTransformData& data)
             m_layerTransforms.combined.translate(-m_state.pos.x(), -m_state.pos.y());
 
         if (!m_state.preserves3D)
-            m_layerTransforms.combinedForChildren = m_layerTransforms.combinedForChildren.to2dTransform();
+            m_layerTransforms.combinedForChildren.flatten();
         m_layerTransforms.combinedForChildren.multiply(m_state.childrenTransform);
         m_layerTransforms.combinedForChildren.translate3d(-originX, -originY, -m_state.anchorPoint.z());
 
@@ -129,7 +268,7 @@ void TextureMapperLayer::computeTransformsRecursive(ComputeTransformData& data)
         m_layerTransforms.futureCombined.translate3d(-originX, -originY, -m_state.anchorPoint.z());
 
         if (!m_state.preserves3D)
-            m_layerTransforms.futureCombinedForChildren = m_layerTransforms.futureCombinedForChildren.to2dTransform();
+            m_layerTransforms.futureCombinedForChildren.flatten();
         m_layerTransforms.futureCombinedForChildren.multiply(m_state.childrenTransform);
         m_layerTransforms.futureCombinedForChildren.translate3d(-originX, -originY, -m_state.anchorPoint.z());
 #endif
@@ -151,23 +290,27 @@ void TextureMapperLayer::computeTransformsRecursive(ComputeTransformData& data)
         return z / w;
     };
 
-    data.updateDepthRange(calculateZ(0, 0));
-    data.updateDepthRange(calculateZ(m_state.size.width(), 0));
-    data.updateDepthRange(calculateZ(0, m_state.size.height()));
-    data.updateDepthRange(calculateZ(m_state.size.width(), m_state.size.height()));
+    auto rect = isFlattened() ? m_flattenedLayer->layerRect() : layerRect();
+
+    data.updateDepthRange(calculateZ(rect.x(), rect.y()));
+    data.updateDepthRange(calculateZ(rect.x() + rect.width(), rect.y()));
+    data.updateDepthRange(calculateZ(rect.x(), rect.y() + rect.height()));
+    data.updateDepthRange(calculateZ(rect.x() + rect.width(), rect.y() + rect.height()));
 
     if (m_parent && m_parent->m_state.preserves3D)
-        m_centerZ = calculateZ(m_state.size.width() / 2, m_state.size.height() / 2);
+        m_centerZ = calculateZ(rect.x() + rect.width() / 2, rect.y() + rect.height() / 2);
 
-    if (m_state.maskLayer)
-        m_state.maskLayer->computeTransformsRecursive(data);
-    if (m_state.replicaLayer)
-        m_state.replicaLayer->computeTransformsRecursive(data);
-    if (m_state.backdropLayer)
-        m_state.backdropLayer->computeTransformsRecursive(data);
-    for (auto* child : m_children) {
-        ASSERT(child->m_parent == this);
-        child->computeTransformsRecursive(data);
+    if (!isFlattened()) {
+        if (m_state.maskLayer)
+            m_state.maskLayer->computeTransformsRecursive(data);
+        if (m_state.replicaLayer)
+            m_state.replicaLayer->computeTransformsRecursive(data);
+        if (m_state.backdropLayer)
+            m_state.backdropLayer->computeTransformsRecursive(data);
+        for (auto* child : m_children) {
+            ASSERT(child->m_parent == this);
+            child->computeTransformsRecursive(data);
+        }
     }
 
     // Reorder children if needed on the way back up.
@@ -182,13 +325,18 @@ void TextureMapperLayer::computeTransformsRecursive(ComputeTransformData& data)
 
 void TextureMapperLayer::paint(TextureMapper& textureMapper)
 {
+    TextureMapperPaintOptions options(textureMapper);
+    options.surface = textureMapper.currentSurface();
+
+    flattenDescendantLayersIfNecessary(options);
+
     ComputeTransformData data;
     computeTransformsRecursive(data);
     textureMapper.setDepthRange(data.zNear, data.zFar);
 
-    TextureMapperPaintOptions options(textureMapper);
-    options.surface = textureMapper.currentSurface();
     paintRecursive(options);
+
+    freeFlattenedDescendantLayers();
 }
 
 void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
@@ -204,6 +352,11 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
     transform.translate(options.offset.width(), options.offset.height());
     transform.multiply(options.transform);
     transform.multiply(m_layerTransforms.combined);
+
+    if (isFlattened()) {
+        m_flattenedLayer->paintToTextureMapper(options.textureMapper, m_flattenedLayer->layerRect(), transform, options.opacity);
+        return;
+    }
 
     TextureMapperSolidColorLayer solidColorLayer;
     TextureMapperBackingStore* backingStore = m_backingStore;
@@ -347,8 +500,10 @@ void TextureMapperLayer::paintSelfAndChildren(TextureMapperPaintOptions& options
         }
     }
 
-    for (auto* child : m_children)
-        child->paintRecursive(options);
+    if (!isFlattened()) {
+        for (auto* child : m_children)
+            child->paintRecursive(options);
+    }
 
     if (shouldClip)
         options.textureMapper.endClip();
@@ -360,6 +515,24 @@ bool TextureMapperLayer::shouldBlend() const
         return false;
 
     return m_currentOpacity < 1;
+}
+
+bool TextureMapperLayer::flattensAsLeafOf3DSceneOr3DPerspective() const
+{
+    bool isLeafOf3DScene = !m_state.preserves3D && (m_parent && m_parent->preserves3D());
+    bool hasPerspective = m_layerTransforms.localTransform.hasPerspective() && m_layerTransforms.localTransform.m34() != -1.f;
+    if ((isLeafOf3DScene || hasPerspective) && !m_children.isEmpty() && has3DLocalTransform())
+        return true;
+
+    return false;
+}
+
+bool TextureMapperLayer::has3DLocalTransform() const
+{
+    return !(!m_layerTransforms.localTransform.m13() && !m_layerTransforms.localTransform.m23()
+        && !m_layerTransforms.localTransform.m31() && !m_layerTransforms.localTransform.m32()
+        && m_layerTransforms.localTransform.m33() == 1 && !m_layerTransforms.localTransform.m34()
+        && !m_layerTransforms.localTransform.m43() && m_layerTransforms.localTransform.m44() == 1);
 }
 
 bool TextureMapperLayer::isVisible() const
@@ -583,7 +756,9 @@ void TextureMapperLayer::computeOverlapRegions(ComputeOverlapRegionData& data, c
         return;
 
     FloatRect localBoundingRect;
-    if (m_backingStore || m_state.masksToBounds || m_state.maskLayer || hasFilters())
+    if (isFlattened())
+        localBoundingRect = m_flattenedLayer->layerRect();
+    else if (m_backingStore || m_state.masksToBounds || m_state.maskLayer || hasFilters())
         localBoundingRect = layerRect();
     else if (m_contentsLayer || m_state.solidColor.isVisible())
         localBoundingRect = m_state.contentsRect;
@@ -809,7 +984,7 @@ void TextureMapperLayer::paintRecursive(TextureMapperPaintOptions& options)
 
     SetForScope scopedOpacity(options.opacity, options.opacity * m_currentOpacity);
 
-    if (m_state.preserves3D)
+    if (preserves3D())
         paintWith3DRenderingContext(options);
     else if (shouldBlend())
         paintUsingOverlapRegions(options);
