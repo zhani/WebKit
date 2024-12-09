@@ -32,7 +32,6 @@
 #include "FloatPlane3D.h"
 #include "TextureMapperGPUBuffer.h"
 #include "TextureMapperLayer.h"
-#include <wtf/Deque.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -45,52 +44,122 @@ void TextureMapperLayer3DRenderingContext::paint(TextureMapper& textureMapper, c
     if (layers.isEmpty())
         return;
 
-    Deque<TextureMapperLayerPolygon> layerList;
-    for (auto* layer : layers)
-        layerList.append({ { layer->effectiveLayerRect(), layer->toSurfaceTransform() }, layer, false });
+    // Compute bounding volumes. These are distinct areas that can be rendered independently.
+    // Bounding volumes help restrict BSP cutting planes to their respective areas, preventing
+    // unnecessary splitting of layers that are spatially distant but would otherwise intersect the cutting plane.
+    Vector<BoundingVolume> boundingVolumes;
+    for (auto* layer : layers) {
+        TextureMapperLayerPolygon layerPolygon({ layer->effectiveLayerRect(), layer->toSurfaceTransform() }, layer, false);
+        auto layerBoundingBox = computeBoundingBoxForLayer(layerPolygon);
 
-    auto root = makeUnique<TextureMapperLayerNode>(layerList.takeFirst());
-    buildTree(*root, layerList);
+        bool addedToExistingBoundingVolume = false;
 
-    // Collect clip data
-    Vector<float> clipVertices;
-    traverseTree(*root, [&clipVertices](TextureMapperLayerNode& node) {
-        for (auto& polygon : node.polygons) {
-            auto toLayerTransform = polygon.layer->toSurfaceTransform().inverse();
-            if (polygon.isSplitted && toLayerTransform) {
-                polygon.clipVertexBufferOffset = clipVertices.size();
-
-                unsigned numVertices = polygon.geometry.numberOfVertices();
-                for (unsigned i = 0; i < numVertices; i++) {
-                    auto v = toLayerTransform->mapPoint(polygon.geometry.vertexAt(i));
-                    clipVertices.append(v.x());
-                    clipVertices.append(v.y());
-                }
+        for (auto& boundingVolume : boundingVolumes) {
+            if (boundingVolume.boundingBox.intersects(layerBoundingBox)) {
+                boundingVolume.boundingBox.extend(layerBoundingBox);
+                boundingVolume.layerList.append(layerPolygon);
+                addedToExistingBoundingVolume = true;
+                break;
             }
         }
-    });
+
+        if (!addedToExistingBoundingVolume) {
+            BoundingVolume newBoundingVolume;
+            newBoundingVolume.boundingBox = layerBoundingBox;
+            newBoundingVolume.layerList.append(layerPolygon);
+            boundingVolumes.append(WTFMove(newBoundingVolume));
+        }
+    }
+
+    depthSortBoundingVolumes(boundingVolumes);
+
+    // Build tree and collect clip data for all bounding volumes
+    Vector<float> clipVertices;
+    for (auto& boundingVolume : boundingVolumes) {
+        boundingVolume.bspRoot = makeUnique<TextureMapperLayerNode>(boundingVolume.layerList.takeFirst());
+        buildTree(*boundingVolume.bspRoot, boundingVolume.layerList);
+
+        traverseTree(*boundingVolume.bspRoot, [&clipVertices](TextureMapperLayerNode& node) {
+            for (auto& polygon : node.polygons) {
+                auto toLayerTransform = polygon.layer->toSurfaceTransform().inverse();
+                if (polygon.isSplitted && toLayerTransform) {
+                    polygon.clipVertexBufferOffset = clipVertices.size();
+
+                    unsigned numVertices = polygon.geometry.numberOfVertices();
+                    for (unsigned i = 0; i < numVertices; i++) {
+                        auto v = toLayerTransform->mapPoint(polygon.geometry.vertexAt(i));
+                        clipVertices.append(v.x());
+                        clipVertices.append(v.y());
+                    }
+                }
+            }
+        });
+    }
 
     unsigned clipBufferSize = clipVertices.size() * sizeof(float);
     auto clipBuffer = textureMapper.acquireBufferFromPool(clipBufferSize, TextureMapperGPUBuffer::Type::Vertex);
     clipBuffer->updateData(clipVertices.data(), 0, clipBufferSize);
 
     // Paint
-    traverseTree(*root, [&clipVertices, &clipBuffer, &paintLayerFunction](TextureMapperLayerNode& node) {
-        for (auto& polygon : node.polygons) {
-            unsigned numberOfClipVertices = polygon.isSplitted ? polygon.geometry.numberOfVertices() : 0;
+    for (auto& boundingVolume : boundingVolumes) {
+        if (boundingVolume.layerList.size() > 1)
+            continue;
+        traverseTree(*boundingVolume.bspRoot, [&clipVertices, &clipBuffer, &paintLayerFunction](TextureMapperLayerNode& node) {
+            for (auto& polygon : node.polygons) {
+                unsigned numberOfClipVertices = polygon.isSplitted ? polygon.geometry.numberOfVertices() : 0;
 
-            Vector<FloatPoint> points;
-            if (numberOfClipVertices > 0) {
-                points.reserveCapacity(numberOfClipVertices);
-                auto xy = clipVertices.subvector(polygon.clipVertexBufferOffset, numberOfClipVertices * 2);
-                for (size_t i = 0; i < xy.size(); i += 2)
-                    points.append(FloatPoint(xy.at(i), xy.at(i + 1)));
+                Vector<FloatPoint> points;
+                if (numberOfClipVertices > 0) {
+                    points.reserveCapacity(numberOfClipVertices);
+                    auto xy = clipVertices.subvector(polygon.clipVertexBufferOffset, numberOfClipVertices * 2);
+                    for (size_t i = 0; i < xy.size(); i += 2)
+                        points.append(FloatPoint(xy.at(i), xy.at(i + 1)));
+                }
+
+                ClipPath clipPath(WTFMove(points), clipBuffer->bufferID(), polygon.clipVertexBufferOffset * sizeof(float));
+
+                paintLayerFunction(polygon.layer, clipPath);
             }
+        });
+    }
+}
 
-            ClipPath clipPath(WTFMove(points), clipBuffer->bufferID(), polygon.clipVertexBufferOffset * sizeof(float));
+TextureMapperLayer3DRenderingContext::AxisAlignedBoundingBox
+TextureMapperLayer3DRenderingContext::computeBoundingBoxForLayer(const TextureMapperLayerPolygon& layerPolygon)
+{
+    FloatPoint3D minCorner =  layerPolygon.geometry.vertexAt(0);
+    FloatPoint3D maxCorner = layerPolygon.geometry.vertexAt(0);
 
-            paintLayerFunction(polygon.layer, clipPath);
-        }
+    unsigned numVertices = layerPolygon.geometry.numberOfVertices();
+    for (unsigned i = 1; i < numVertices; i++) {
+        auto point = layerPolygon.geometry.vertexAt(i);
+        minCorner.setX(std::min(minCorner.x(), point.x()));
+        minCorner.setY(std::min(minCorner.y(), point.y()));
+        minCorner.setZ(std::min(minCorner.z(), point.z()));
+
+        maxCorner.setX(std::max(maxCorner.x(), point.x()));
+        maxCorner.setY(std::max(maxCorner.y(), point.y()));
+        maxCorner.setZ(std::max(maxCorner.z(), point.z()));
+    }
+
+    return { minCorner, maxCorner };
+}
+
+void TextureMapperLayer3DRenderingContext::depthSortBoundingVolumes(Vector<BoundingVolume>& boundingVolumes)
+{
+    static auto computeCenter = [](const AxisAlignedBoundingBox& aabb) {
+        return FloatPoint3D(
+            (aabb.minCorner.x() + aabb.maxCorner.x()) / 2,
+            (aabb.minCorner.y() + aabb.maxCorner.y()) / 2,
+            (aabb.minCorner.z() + aabb.maxCorner.z()) / 2
+        );
+    };
+
+    std::sort(boundingVolumes.begin(), boundingVolumes.end(), [](const BoundingVolume& a, const BoundingVolume& b) {
+        FloatPoint3D centerA = computeCenter(a.boundingBox);
+        FloatPoint3D centerB = computeCenter(b.boundingBox);
+
+        return centerA.z() < centerB.z();
     });
 }
 

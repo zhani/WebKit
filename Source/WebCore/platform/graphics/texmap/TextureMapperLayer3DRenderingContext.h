@@ -28,6 +28,7 @@
 #pragma once
 
 #include "FloatPolygon3D.h"
+#include <wtf/Deque.h>
 #include <wtf/TZoneMalloc.h>
 
 namespace WebCore {
@@ -58,6 +59,31 @@ private:
         unsigned clipVertexBufferOffset { 0 };
     };
 
+    struct AxisAlignedBoundingBox {
+        WTF_MAKE_STRUCT_FAST_ALLOCATED;
+
+        bool intersects(const AxisAlignedBoundingBox& other) const
+        {
+            return (minCorner.x() <= other.maxCorner.x() && maxCorner.x() >= other.minCorner.x())
+                && (minCorner.y() <= other.maxCorner.y() && maxCorner.y() >= other.minCorner.y())
+                && (minCorner.z() <= other.maxCorner.z() && maxCorner.z() >= other.minCorner.z());
+        }
+
+        void extend(const AxisAlignedBoundingBox& other)
+        {
+            minCorner.setX(std::min(minCorner.x(), other.minCorner.x()));
+            minCorner.setY(std::min(minCorner.y(), other.minCorner.y()));
+            minCorner.setZ(std::min(minCorner.z(), other.minCorner.z()));
+
+            maxCorner.setX(std::max(maxCorner.x(), other.maxCorner.x()));
+            maxCorner.setY(std::max(maxCorner.y(), other.maxCorner.y()));
+            maxCorner.setZ(std::max(maxCorner.z(), other.maxCorner.z()));
+        }
+
+        FloatPoint3D minCorner;
+        FloatPoint3D maxCorner;
+    };
+
     struct TextureMapperLayerNode final {
         WTF_MAKE_STRUCT_FAST_ALLOCATED;
 
@@ -73,6 +99,17 @@ private:
         std::unique_ptr<TextureMapperLayerNode> backNode;
     };
 
+    struct BoundingVolume final {
+        WTF_MAKE_STRUCT_FAST_ALLOCATED;
+
+        AxisAlignedBoundingBox boundingBox;
+        Deque<TextureMapperLayerPolygon> layerList;
+        std::unique_ptr<TextureMapperLayerNode> bspRoot;
+    };
+
+
+    AxisAlignedBoundingBox computeBoundingBoxForLayer(const TextureMapperLayerPolygon&);
+    void depthSortBoundingVolumes(Vector<BoundingVolume>&);
     void buildTree(TextureMapperLayerNode&, Deque<TextureMapperLayerPolygon>&);
     void traverseTree(TextureMapperLayerNode&, const std::function<void(TextureMapperLayerNode&)>&);
     static PolygonPosition classifyPolygon(const TextureMapperLayerPolygon&, const FloatPlane3D&);
